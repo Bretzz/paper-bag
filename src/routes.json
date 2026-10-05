@@ -1,0 +1,19 @@
+{
+    "public_routes": [
+        {
+            "URL": "www.example.com/"
+        }
+    ],
+    "protected_routes": [
+        {
+            "URL": "www.example.com/projectX",
+            "username": "username",
+            "password": "secret_password"
+        },
+        {
+            "URL": "drive.example.com",
+            "username": "username",
+            "password": "secret_password"
+        }
+    ]
+}
