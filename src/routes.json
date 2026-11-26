@@ -1,19 +1,22 @@
 {
     "public_routes": [
         {
-            "URL": "www.example.com/"
+            "URL": "www.example.com/",
+            "fwd": "localhost:8080/"
         }
     ],
     "protected_routes": [
         {
-            "URL": "www.example.com/projectX",
+            "URL": "example.com/model",
             "username": "username",
-            "password": "secret_password"
+            "password": "hashed-pwd",
+            "fwd": "localhost:3000/"
         },
         {
-            "URL": "drive.example.com",
+            "URL": "das-hub.example.com",
             "username": "username",
-            "password": "secret_password"
+            "password": "hashed-pwd",
+            "fwd": "localhost:3001/"
         }
     ]
 }

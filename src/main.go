@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // 1. read the list of routes
@@ -21,12 +22,13 @@ import (
 // 4. /auth is the endpoint where the user will POST: URL, username, password.
 // 5. if auth is ok, attach JWT relative to that route, if not error message.
 
-var jwtSecret = []byte("iamcoolindeed-hhhhhhhh")
+var jwtSecret = []byte("production-secret-is-real")
 
 type Route struct {
 	URL      string `json:"URL"`
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
+	Fwd	 string `json:"fwd"`
 }
 
 type Config struct {
@@ -49,6 +51,19 @@ var (
 	publicRoutes    []Route
 	protectedRoutes []Route
 )
+
+// Credits https://medium.com/@rnp0728/secure-password-hashing-in-go-a-comprehensive-guide-5500e19e7c1f
+// HashPassword generates a bcrypt hash for the given password.
+func HashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 14)
+	return string(bytes), err
+}
+
+// VerifyPassword verifies if the given password matches the stored hash.
+func VerifyPassword(password, hash string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	return err == nil
+}
 
 func main() {
 	// 1. Read the list of routes
@@ -76,20 +91,26 @@ func main() {
 	// 2 & 3. Main proxy handler (public routes & protected routes)
 	http.HandleFunc("/", handleProxy)
 
-	fmt.Println("Proxy running on :8081...")
+	fmt.Println("Proxy running on :8081")
 	if err := http.ListenAndServe(":8081", nil); err != nil {
 		log.Fatal(err)
 	}
 }
 
 func handleProxy(w http.ResponseWriter, r *http.Request) {
-	reqPath := r.URL.Path
+	reqRoute := r.Host + r.URL.Path
+
+	/* fmt.Printf("r.URL: %v\n", r.URL)
+	fmt.Printf("r.Host '%s'\n", r.Host)
+	fmt.Printf("r.URL.Hostname() '%s'\n", r.URL.Hostname())
+	fmt.Printf("reqRoute '%s'\n", reqRoute)
+	fmt.Println("------------------------------------------") */
 
 	// Check if path matches any protected route
 	var matchedProtected *Route
 	for _, pr := range protectedRoutes {
-		pPath := getPath(pr.URL)
-		if strings.HasPrefix(reqPath, pPath) {
+		//pPath := getPath(pr.URL)
+		if strings.HasPrefix(reqRoute, pr.URL) {
 			matchedProtected = &pr
 			break
 		}
@@ -103,22 +124,22 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/auth?route="+url.QueryEscape(matchedProtected.URL), http.StatusFound)
 			return
 		}
-		forwardRequest(w, r, matchedProtected.URL)
+		forwardRequest(w, r, matchedProtected.Fwd)
 		return
 	}
 
 	// Check if path matches any public route
 	var matchedPublic *Route
 	for _, pub := range publicRoutes {
-		pubPath := getPath(pub.URL)
-		if strings.HasPrefix(reqPath, pubPath) {
+		//pubPath := getPath(pub.URL)
+		if strings.HasPrefix(reqRoute, pub.URL) {
 			matchedPublic = &pub
 			break
 		}
 	}
 
 	if matchedPublic != nil {
-		forwardRequest(w, r, matchedPublic.URL)
+		forwardRequest(w, r, matchedPublic.Fwd)
 		return
 	}
 
@@ -149,7 +170,7 @@ func handleAuth(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if targetRoute == nil || req.Username != targetRoute.Username || req.Password != targetRoute.Password {
+		if targetRoute == nil || req.Username != targetRoute.Username || VerifyPassword(req.Password, targetRoute.Password) == false/* || req.Password != targetRoute.Password*/ {
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte(`{"error":"Invalid username or password"}`))
 			return
@@ -213,6 +234,7 @@ func forwardRequest(w http.ResponseWriter, r *http.Request, targetURL string) {
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(parsed)
+	r.Header.Set("X-Forwarded-Host", r.Host)
 	r.Host = parsed.Host
 	proxy.ServeHTTP(w, r)
 }
@@ -230,6 +252,53 @@ func getPath(rawURL string) string {
 	}
 	return parsed.Path
 }
+
+/* func forwardRequest(w http.ResponseWriter, r *http.Request, targetURL string) {
+	if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
+		targetURL = "http://" + targetURL
+	}
+
+	parsed, err := url.Parse(targetURL)
+	if err != nil {
+		http.Error(w, "Bad target URL", http.StatusInternalServerError)
+		return
+	}
+
+	// 1. Dynamic CORS Origin Reflection
+	// (Required when Access-Control-Allow-Credentials: true is set; browsers reject wildcard "*")
+	origin := r.Header.Get("Origin")
+	if origin != "" {
+		// Optional: Add validation here to check if 'origin' matches your allowed frontend domains
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+	}
+
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+	// 2. Handle Browser Preflight (OPTIONS) Requests
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// 3. Setup the Reverse Proxy and Director modifications
+	proxy := httputil.NewSingleHostReverseProxy(parsed)
+	originalDirector := proxy.Director
+
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.Header.Set("X-Forwarded-Host", r.Host)
+		req.Host = parsed.Host
+
+		// Optional: If your proxy validated the JWT cookie and extracted user details,
+		// pass them downstream to your backend service here:
+		// req.Header.Set("X-Authenticated-User", "username_from_jwt")
+	}
+
+	fmt.Printf("Forwarding to Host: %s\n", r.Host)
+	proxy.ServeHTTP(w, r)
+} */
 
 const loginHTML = `<!DOCTYPE html>
 <html>
